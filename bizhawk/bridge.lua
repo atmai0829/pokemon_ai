@@ -11,6 +11,7 @@ local BRIDGE_DIRECTORY = rawget(_G, "BRIDGE_DIRECTORY_OVERRIDE")
     or "C:\\Users\\maibi\\GIT\\pokemon_ai\\bridge"
 local OBSERVATION_PATH = BRIDGE_DIRECTORY .. "\\observation.json"
 local TEMP_PATH = BRIDGE_DIRECTORY .. "\\observation.json.tmp"
+local OBSERVATION_INTERVAL_FRAMES = 60
 
 local MEMORY_DOMAIN = "EWRAM"
 local EWRAM_START = 0x02000000
@@ -47,10 +48,19 @@ local ALLOWED_BUTTONS = {
 local HUNT_CONFIG = {
     mode = "grass",
     grass_inputs = {
-        { buttons = { "Up" }, frames = 16 },
-        { buttons = { "Down" }, frames = 16 },
+        { buttons = { "Up" }, frames = 1 },
+        { buttons = {}, frames = 30 },
+        { buttons = { "Down" }, frames = 1 },
+        { buttons = {}, frames = 30 },
     },
-    flee_inputs = { { buttons = { "B" }, frames = 1 } },
+    flee_inputs = {
+        { buttons = { "Right" }, frames = 1 },
+        { buttons = {}, frames = 12 },
+        { buttons = { "Down" }, frames = 1 },
+        { buttons = {}, frames = 12 },
+        { buttons = { "A" }, frames = 1 },
+        { buttons = {}, frames = 24 },
+    },
     reset_inputs = { buttons = { "Power" }, frames = 1 },
     post_reset_inputs = { { buttons = { "A" }, frames = 1 } },
     starter_species = 1,
@@ -133,7 +143,7 @@ local function submit_input(action)
         error(message)
     end
 
-    local buttons = { frames = action.frames }
+    local buttons = {}
     for _, button in ipairs(action.buttons) do
         buttons[button] = true
     end
@@ -182,7 +192,7 @@ local function is_shiny(record)
     local personality_high = math.floor(record.personality / 0x10000)
     local trainer_low = record.original_trainer_id % 0x10000
     local trainer_high = math.floor(record.original_trainer_id / 0x10000)
-    return bit.bxor(personality_low, personality_high, trainer_low, trainer_high) < 8
+    return (personality_low ~ personality_high ~ trainer_low ~ trainer_high) < 8
 end
 
 local function inspect_encounter(kind)
@@ -270,6 +280,7 @@ if rawget(_G, "BRIDGE_TEST_MODE") then
 end
 
 local turn = 0
+local observation_frames = 0
 local config_valid, config_error = validate_hunt_config(HUNT_CONFIG)
 if not config_valid then
     error("invalid HUNT_CONFIG: " .. config_error)
@@ -277,23 +288,45 @@ end
 
 local grass_action_index = 1
 local grass_frames_remaining = 0
+local flee_action_index = 1
+local flee_frames_remaining = 0
 local shiny_found = false
+
+local function advance_flee_input()
+    if flee_frames_remaining <= 0 then
+        flee_frames_remaining = HUNT_CONFIG.flee_inputs[flee_action_index].frames
+    end
+
+    submit_input(HUNT_CONFIG.flee_inputs[flee_action_index])
+    flee_frames_remaining = flee_frames_remaining - 1
+
+    if flee_frames_remaining <= 0 then
+        flee_action_index = flee_action_index % #HUNT_CONFIG.flee_inputs + 1
+    end
+end
 
 local function advance_grass_input()
     if grass_frames_remaining <= 0 then
-        local action = HUNT_CONFIG.grass_inputs[grass_action_index]
-        grass_action_index = grass_action_index % #HUNT_CONFIG.grass_inputs + 1
-        grass_frames_remaining = action.frames
-        submit_input(action)
+        grass_frames_remaining = HUNT_CONFIG.grass_inputs[grass_action_index].frames
     end
+    local action = HUNT_CONFIG.grass_inputs[grass_action_index]
+    submit_input(action)
     grass_frames_remaining = grass_frames_remaining - 1
+
+    if grass_frames_remaining <= 0 then
+        grass_action_index = grass_action_index % #HUNT_CONFIG.grass_inputs + 1
+    end
 end
 
 while true do
     local state = read_state()
     if state then
-        turn = turn + 1
-        write_observation({ turn = turn, state = state })
+        observation_frames = observation_frames + 1
+        if observation_frames >= OBSERVATION_INTERVAL_FRAMES then
+            observation_frames = 0
+            turn = turn + 1
+            write_observation({ turn = turn, state = state })
+        end
     end
 
     if HUNT_CONFIG.mode == "grass" and not shiny_found then
@@ -305,8 +338,10 @@ while true do
             client.pause()
         elseif encounter == "not_shiny" then
             grass_frames_remaining = 0
-            submit_input(HUNT_CONFIG.flee_inputs[1])
+            advance_flee_input()
         else
+            flee_action_index = 1
+            flee_frames_remaining = 0
             advance_grass_input()
         end
     end
