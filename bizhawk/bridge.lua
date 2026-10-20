@@ -27,7 +27,116 @@ local MAP_NUMBER_OFFSET = 0x0005
 local BADGES_OFFSET = 0x0F64
 local PLAYER_PARTY_COUNT = 0x02024029
 
+local ALLOWED_BUTTONS = {
+    A = true,
+    B = true,
+    Down = true,
+    L = true,
+    Left = true,
+    Power = true,
+    R = true,
+    Right = true,
+    Select = true,
+    Start = true,
+    Up = true,
+}
+
+local HUNT_CONFIG = {
+    mode = "grass",
+    grass_inputs = { { buttons = { "Up" }, frames = 1 } },
+    flee_inputs = { { buttons = { "B" }, frames = 1 } },
+    reset_inputs = { buttons = { "Power" }, frames = 1 },
+    post_reset_inputs = { { buttons = { "A" }, frames = 1 } },
+    starter_species = 1,
+    timeouts = {
+        overworld = 60,
+        battle_start = 60,
+        flee_completion = 60,
+        reset = 60,
+        target = 60,
+    },
+}
+
 memory.usememorydomain(MEMORY_DOMAIN)
+
+local function validate_action(action)
+    if type(action) ~= "table" or type(action.buttons) ~= "table"
+        or type(action.frames) ~= "number" or action.frames <= 0
+        or action.frames % 1 ~= 0 then
+        return false, "action must have buttons and a positive integer frame count"
+    end
+
+    for _, button in ipairs(action.buttons) do
+        if not ALLOWED_BUTTONS[button] then
+            return false, "unknown controller button: " .. tostring(button)
+        end
+    end
+
+    return true
+end
+
+local function validate_action_list(actions, name)
+    if type(actions) ~= "table" or #actions == 0 then
+        return false, name .. " must be a non-empty action list"
+    end
+
+    for _, action in ipairs(actions) do
+        local valid, message = validate_action(action)
+        if not valid then
+            return false, message
+        end
+    end
+
+    return true
+end
+
+local function validate_hunt_config(config)
+    if type(config) ~= "table" or (config.mode ~= "grass" and config.mode ~= "soft_reset") then
+        return false, "mode must be grass or soft_reset"
+    end
+
+    local valid, message = validate_action_list(config.grass_inputs, "grass_inputs")
+    if not valid then return false, message end
+    valid, message = validate_action_list(config.flee_inputs, "flee_inputs")
+    if not valid then return false, message end
+    valid, message = validate_action(config.reset_inputs)
+    if not valid then return false, message end
+    valid, message = validate_action_list(config.post_reset_inputs, "post_reset_inputs")
+    if not valid then return false, message end
+
+    if type(config.starter_species) ~= "number" or config.starter_species <= 0 then
+        return false, "starter_species must be positive"
+    end
+
+    if type(config.timeouts) ~= "table" then
+        return false, "timeouts must be a table"
+    end
+    for _, name in ipairs({ "overworld", "battle_start", "flee_completion", "reset", "target" }) do
+        local timeout = config.timeouts[name]
+        if type(timeout) ~= "number" or timeout <= 0 or timeout % 1 ~= 0 then
+            return false, "timeout must be a positive integer: " .. name
+        end
+    end
+
+    return true
+end
+
+local function submit_input(action)
+    local valid, message = validate_action(action)
+    if not valid then
+        error(message)
+    end
+
+    local buttons = { frames = action.frames }
+    for _, button in ipairs(action.buttons) do
+        buttons[button] = true
+    end
+    joypad.set(buttons)
+end
+
+local function clear_input()
+    joypad.set({})
+end
 
 local function read_u8(address)
     if address >= EWRAM_START and address <= EWRAM_END then
@@ -103,9 +212,13 @@ local function write_observation(observation)
 end
 
 local bridge = {
+    HUNT_CONFIG = HUNT_CONFIG,
+    clear_input = clear_input,
     read_u16_le = read_u16_le,
     is_valid_ewram_pointer = is_valid_ewram_pointer,
     read_state = read_state,
+    submit_input = submit_input,
+    validate_hunt_config = validate_hunt_config,
     write_observation = write_observation,
 }
 
@@ -114,6 +227,10 @@ if rawget(_G, "BRIDGE_TEST_MODE") then
 end
 
 local turn = 0
+local config_valid, config_error = validate_hunt_config(HUNT_CONFIG)
+if not config_valid then
+    error("invalid HUNT_CONFIG: " .. config_error)
+end
 while true do
     local state = read_state()
     if state then
