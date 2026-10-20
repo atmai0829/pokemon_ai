@@ -26,6 +26,9 @@ local MAP_GROUP_OFFSET = 0x0004
 local MAP_NUMBER_OFFSET = 0x0005
 local BADGES_OFFSET = 0x0F64
 local PLAYER_PARTY_COUNT = 0x02024029
+local ENEMY_PARTY_BASE = 0x0202402C
+local WILD_CALLBACK_1 = 0x080123E5
+local WILD_CALLBACK_2 = 0x08011101
 
 local ALLOWED_BUTTONS = {
     A = true,
@@ -43,7 +46,10 @@ local ALLOWED_BUTTONS = {
 
 local HUNT_CONFIG = {
     mode = "grass",
-    grass_inputs = { { buttons = { "Up" }, frames = 1 } },
+    grass_inputs = {
+        { buttons = { "Up" }, frames = 16 },
+        { buttons = { "Down" }, frames = 16 },
+    },
     flee_inputs = { { buttons = { "B" }, frames = 1 } },
     reset_inputs = { buttons = { "Power" }, frames = 1 },
     post_reset_inputs = { { buttons = { "A" }, frames = 1 } },
@@ -156,6 +162,40 @@ local function read_u32_le(address)
     return read_u16_le(address) + read_u16_le(address + 2) * 0x10000
 end
 
+local function is_wild_battle()
+    return read_u32_le(0x030030F0) == WILD_CALLBACK_1
+        and read_u32_le(0x030030F4) == WILD_CALLBACK_2
+end
+
+local function read_wild_pokemon()
+    if not is_wild_battle() then
+        return nil
+    end
+    return {
+        personality = read_u32_le(ENEMY_PARTY_BASE),
+        original_trainer_id = read_u32_le(ENEMY_PARTY_BASE + 4),
+    }
+end
+
+local function is_shiny(record)
+    local personality_low = record.personality % 0x10000
+    local personality_high = math.floor(record.personality / 0x10000)
+    local trainer_low = record.original_trainer_id % 0x10000
+    local trainer_high = math.floor(record.original_trainer_id / 0x10000)
+    return bit.bxor(personality_low, personality_high, trainer_low, trainer_high) < 8
+end
+
+local function inspect_encounter(kind)
+    if kind ~= "wild" then
+        return "unknown"
+    end
+    local record = read_wild_pokemon()
+    if not record then
+        return "unknown"
+    end
+    return is_shiny(record) and "shiny" or "not_shiny"
+end
+
 local function is_valid_ewram_pointer(pointer)
     return pointer >= EWRAM_START and pointer <= EWRAM_END - 3 and pointer % 4 == 0
 end
@@ -214,7 +254,10 @@ end
 local bridge = {
     HUNT_CONFIG = HUNT_CONFIG,
     clear_input = clear_input,
+    inspect_encounter = inspect_encounter,
+    is_shiny = is_shiny,
     read_u16_le = read_u16_le,
+    read_wild_pokemon = read_wild_pokemon,
     is_valid_ewram_pointer = is_valid_ewram_pointer,
     read_state = read_state,
     submit_input = submit_input,
@@ -231,11 +274,42 @@ local config_valid, config_error = validate_hunt_config(HUNT_CONFIG)
 if not config_valid then
     error("invalid HUNT_CONFIG: " .. config_error)
 end
+
+local grass_action_index = 1
+local grass_frames_remaining = 0
+local shiny_found = false
+
+local function advance_grass_input()
+    if grass_frames_remaining <= 0 then
+        local action = HUNT_CONFIG.grass_inputs[grass_action_index]
+        grass_action_index = grass_action_index % #HUNT_CONFIG.grass_inputs + 1
+        grass_frames_remaining = action.frames
+        submit_input(action)
+    end
+    grass_frames_remaining = grass_frames_remaining - 1
+end
+
 while true do
     local state = read_state()
     if state then
         turn = turn + 1
         write_observation({ turn = turn, state = state })
     end
+
+    if HUNT_CONFIG.mode == "grass" and not shiny_found then
+        local encounter = inspect_encounter("wild")
+        if encounter == "shiny" then
+            shiny_found = true
+            clear_input()
+            gui.drawText(4, 4, "SHINY FOUND - EMULATION PAUSED", "white", "red")
+            client.pause()
+        elseif encounter == "not_shiny" then
+            grass_frames_remaining = 0
+            submit_input(HUNT_CONFIG.flee_inputs[1])
+        else
+            advance_grass_input()
+        end
+    end
+
     emu.frameadvance()
 end
