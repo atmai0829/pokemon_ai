@@ -1,2 +1,2 @@
 # pokemon_ai
-A Pokemon AI to play through Pokemone FireRed
+A Shiny Hunting Bot for all Pokemon Games
