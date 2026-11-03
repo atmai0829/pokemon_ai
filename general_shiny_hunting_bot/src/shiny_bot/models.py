@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 from PIL import Image
 from typing import Any
 
@@ -41,7 +42,7 @@ class CaptureResult:
                 raise ValueError("An error cannot have an image or viewport.")
 
     @classmethod
-    def ok(cls, image: Image.Image, viewport: Image.Image):
+    def ok(cls, image: Image.Image, viewport: Rect):
         return cls(status="ok", image=image, viewport=viewport)
 
     @classmethod
@@ -68,6 +69,12 @@ class VisionResult:
             if self.species_form:
                 raise ValueError("An error status can not have a species.")
 
+        if self.status == "match":
+            if self.species_form is None:
+                raise ValueError("A match needs a species/form.")
+            if self.reason is not None:
+                raise ValueError("A match cannot have a reason.")
+
     @classmethod
     def match(cls, species_form: str, confidence: float):
         return cls(status="match", species_form=species_form, confidence=confidence)
@@ -86,10 +93,37 @@ class StartupError(RuntimeError):
 @dataclass(frozen=True)
 class Profile:
     version: int
-    keys: dict[str, str] = field(default_factory=dict)
-    timings: dict[str, float] = field(default_factory=dict)
-    thresholds: dict[str, float] = field(default_factory=dict)
+    regions: dict[str, Rect]
+    keys: dict[str, str]
+    timings: dict[str, float]
+    thresholds: dict[str, float]
+    catalog_path: Path
+    assets: tuple[dict[str, object], ...] = ()
 
+    def __post_init__(self):
+        if not isinstance(self.version, int):
+            raise ValueError("Version must be an integer.")
+        if not isinstance(self.regions, dict):
+            raise ValueError("Regions must be a dictionary.")
+        if not isinstance(self.keys, dict):
+            raise ValueError("Keys must be a dictionary.")
+        if not isinstance(self.timings, dict):
+            raise ValueError("Timings must be a dictionary.")
+        if not isinstance(self.thresholds, dict):
+            raise ValueError("Thresholds must be a dictionary.")
+        if not isinstance(self.catalog_path, Path):
+            raise ValueError("Catalog path must be a Path object.")
+        if not isinstance(self.assets, tuple):
+            raise ValueError("Assets must be a tuple.")
+        for asset in self.assets:
+            if not isinstance(asset, dict):
+                raise ValueError("Each asset must be a dictionary.")
+            for key, value in asset.items():
+                if not isinstance(key, str):
+                    raise ValueError("Asset keys must be strings.")
+                if not isinstance(value, object):
+                    raise ValueError("Asset values must be objects.")
+                
 @dataclass(frozen=True)
 class UserConfig:
     profile_version: int
